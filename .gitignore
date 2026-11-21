@@ -1,0 +1,26 @@
+# Archives de build du plugin (générées localement pour upload WordPress)
+*.zip
+
+# Fichiers système macOS / Windows
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+
+# Éditeurs / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs et variables d'environnement éventuelles
+*.log
+.env
+.env.*
+
+# Dépendances éventuelles (Composer / Node si ajoutées plus tard)
+vendor/
+node_modules/
