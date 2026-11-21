@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: SEOGhost Connector
- * Description: Reçoit et publie automatiquement les articles générés par SEOGhost (import médias, SEOPress/Yoast/RankMath, fallback SEO autonome, liens internes dynamiques et tableaux responsive).
- * Version: 1.0.1
+ * Description: Reçoit et publie automatiquement les articles générés par SEOGhost (import médias, SEOPress/Yoast/RankMath, fallback SEO autonome, liens internes dynamiques, tableaux responsive et mises à jour GitHub).
+ * Version: 1.0.2
  * Author: SEOGhost
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -13,14 +13,17 @@ if (!defined('ABSPATH')) {
 }
 
 class SEOGhost_Connector {
-    const VERSION         = '1.0.1';
-    const OPTION_KEY      = 'seoghost_connector_settings';
-    const META_ARTICLE_ID = '_seoghost_article_id';
-    const META_COVER_SRC  = '_seoghost_cover_source_url';
-    const META_IMAGE_MAP  = '_seoghost_image_map';
-    const META_SEO_TITLE  = '_seoghost_seo_title';
-    const META_SEO_DESC   = '_seoghost_meta_description';
-    const META_COVER_ALT  = '_seoghost_cover_alt';
+    const VERSION          = '1.0.2';
+    const GITHUB_REPO      = 'n3twrks/seoghost-wordpress-plugin';
+    const UPDATE_TRANSIENT = 'seoghost_github_release';
+
+    const OPTION_KEY       = 'seoghost_connector_settings';
+    const META_ARTICLE_ID  = '_seoghost_article_id';
+    const META_COVER_SRC   = '_seoghost_cover_source_url';
+    const META_IMAGE_MAP   = '_seoghost_image_map';
+    const META_SEO_TITLE   = '_seoghost_seo_title';
+    const META_SEO_DESC    = '_seoghost_meta_description';
+    const META_COVER_ALT   = '_seoghost_cover_alt';
 
     public function __construct() {
         add_action('admin_menu', [$this, 'add_settings_page']);
@@ -34,6 +37,16 @@ class SEOGhost_Connector {
         // Résolution dynamique des liens internes + tableaux responsive à l'affichage
         add_filter('the_content', [$this, 'resolve_internal_links'], 20);
         add_filter('the_content', [$this, 'wrap_responsive_tables'], 25);
+
+        // Auto-update depuis les Releases GitHub
+        add_filter('pre_set_site_transient_update_plugins', [$this, 'check_for_update']);
+        add_filter('plugins_api', [$this, 'plugin_update_info'], 20, 3);
+        add_action('upgrader_process_complete', [$this, 'purge_update_cache'], 10, 2);
+        add_action('load-update-core.php', function () {
+            if (!empty($_GET['force-check'])) {
+                delete_transient(self::UPDATE_TRANSIENT);
+            }
+        });
     }
 
     public static function get_settings(): array {
@@ -719,7 +732,6 @@ class SEOGhost_Connector {
         $post_id = get_queried_object_id();
         if (!get_post_meta($post_id, self::META_ARTICLE_ID, true)) return;
 
-        // CSS de protection mobile pour éviter que les tableaux/URLs longues ne cassent le thème client
         echo "<style id=\"seoghost-connector-responsive\">\n"
             . "main, article, .entry-content { min-width: 0; }\n"
             . "article img { max-width: 100%; height: auto; }\n"
@@ -767,6 +779,122 @@ class SEOGhost_Connector {
                 $schema['image'] = [$cover_url];
             }
             echo '<script type="application/ld+json">' . wp_json_encode($schema, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "</script>\n";
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Auto-Update via GitHub Releases
+    // -------------------------------------------------------------------------
+
+    private function get_latest_github_release(): ?array {
+        $cached = get_transient(self::UPDATE_TRANSIENT);
+        if (is_array($cached)) {
+            return !empty($cached['error']) ? null : $cached;
+        }
+
+        $url = 'https://api.github.com/repos/' . self::GITHUB_REPO . '/releases/latest';
+        $res = wp_remote_get($url, [
+            'timeout' => 10,
+            'headers' => [
+                'Accept'     => 'application/vnd.github+json',
+                'User-Agent' => 'SEOGhost-Connector/' . self::VERSION,
+            ],
+        ]);
+
+        if (is_wp_error($res) || wp_remote_retrieve_response_code($res) !== 200) {
+            set_transient(self::UPDATE_TRANSIENT, ['error' => true], 30 * MINUTE_IN_SECONDS);
+            return null;
+        }
+
+        $body = json_decode((string) wp_remote_retrieve_body($res), true);
+        if (!is_array($body) || empty($body['tag_name'])) {
+            set_transient(self::UPDATE_TRANSIENT, ['error' => true], 30 * MINUTE_IN_SECONDS);
+            return null;
+        }
+
+        $package = '';
+        if (!empty($body['assets']) && is_array($body['assets'])) {
+            foreach ($body['assets'] as $asset) {
+                if (!empty($asset['browser_download_url']) && substr((string) ($asset['name'] ?? ''), -4) === '.zip') {
+                    $package = (string) $asset['browser_download_url'];
+                    break;
+                }
+            }
+        }
+
+        if ($package === '') {
+            set_transient(self::UPDATE_TRANSIENT, ['error' => true], 30 * MINUTE_IN_SECONDS);
+            return null;
+        }
+
+        $release = [
+            'version'   => ltrim((string) $body['tag_name'], 'vV'),
+            'url'       => (string) ($body['html_url'] ?? ''),
+            'package'   => $package,
+            'changelog' => nl2br(esc_html((string) ($body['body'] ?? ''))),
+            'published' => (string) ($body['published_at'] ?? ''),
+        ];
+
+        set_transient(self::UPDATE_TRANSIENT, $release, 6 * HOUR_IN_SECONDS);
+        return $release;
+    }
+
+    public function check_for_update($transient) {
+        if (!is_object($transient) || empty($transient->checked)) {
+            return $transient;
+        }
+
+        $release = $this->get_latest_github_release();
+        if (!$release) {
+            return $transient;
+        }
+
+        $plugin_file = plugin_basename(__FILE__);
+        if (version_compare($release['version'], self::VERSION, '>')) {
+            $transient->response[$plugin_file] = (object) [
+                'slug'         => 'seoghost-connector',
+                'plugin'       => $plugin_file,
+                'new_version'  => $release['version'],
+                'url'          => $release['url'],
+                'package'      => $release['package'],
+                'requires'     => '6.0',
+                'requires_php' => '7.4',
+            ];
+        }
+
+        return $transient;
+    }
+
+    public function plugin_update_info($result, $action, $args) {
+        if ($action !== 'plugin_information' || empty($args->slug) || $args->slug !== 'seoghost-connector') {
+            return $result;
+        }
+
+        $release = $this->get_latest_github_release();
+        if (!$release) {
+            return $result;
+        }
+
+        return (object) [
+            'name'          => 'SEOGhost Connector',
+            'slug'          => 'seoghost-connector',
+            'version'       => $release['version'],
+            'author'        => 'SEOGhost',
+            'homepage'      => $release['url'],
+            'download_link' => $release['package'],
+            'last_updated'  => $release['published'],
+            'requires'      => '6.0',
+            'requires_php'  => '7.4',
+            'sections'      => [
+                'description' => 'Connecteur officiel SEOGhost pour WordPress.',
+                'changelog'   => $release['changelog'] ?: 'Mise à jour depuis GitHub.',
+            ],
+        ];
+    }
+
+    public function purge_update_cache($upgrader, $options): void {
+        if (is_array($options) && ($options['action'] ?? '') === 'update' && ($options['type'] ?? '') === 'plugin') {
+            delete_transient(self::UPDATE_TRANSIENT);
         }
     }
 }
