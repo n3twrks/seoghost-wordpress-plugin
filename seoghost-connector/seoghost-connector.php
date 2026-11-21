@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: SEOGhost Connector
- * Description: Reçoit et publie automatiquement les articles générés par SEOGhost (import médias, SEOPress/Yoast/RankMath, fallback SEO autonome et liens internes dynamiques).
- * Version: 1.0.0
+ * Description: Reçoit et publie automatiquement les articles générés par SEOGhost (import médias, SEOPress/Yoast/RankMath, fallback SEO autonome, liens internes dynamiques et tableaux responsive).
+ * Version: 1.0.1
  * Author: SEOGhost
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -13,7 +13,8 @@ if (!defined('ABSPATH')) {
 }
 
 class SEOGhost_Connector {
-    const OPTION_KEY = 'seoghost_connector_settings';
+    const VERSION         = '1.0.1';
+    const OPTION_KEY      = 'seoghost_connector_settings';
     const META_ARTICLE_ID = '_seoghost_article_id';
     const META_COVER_SRC  = '_seoghost_cover_source_url';
     const META_IMAGE_MAP  = '_seoghost_image_map';
@@ -26,12 +27,13 @@ class SEOGhost_Connector {
         add_action('admin_init', [$this, 'register_settings']);
         add_action('rest_api_init', [$this, 'register_routes']);
 
-        // Fallback SEO autonome (uniquement si aucun plugin SEO majeur n'est actif)
+        // Fallback SEO autonome + CSS responsive articles SEOGhost
         add_filter('pre_get_document_title', [$this, 'filter_document_title'], 99);
         add_action('wp_head', [$this, 'render_head_tags'], 5);
 
-        // Résolution dynamique des liens internes à l'affichage
+        // Résolution dynamique des liens internes + tableaux responsive à l'affichage
         add_filter('the_content', [$this, 'resolve_internal_links'], 20);
+        add_filter('the_content', [$this, 'wrap_responsive_tables'], 25);
     }
 
     public static function get_settings(): array {
@@ -92,7 +94,7 @@ class SEOGhost_Connector {
         $endpoint   = rest_url('seoghost/v1/publish');
         ?>
         <div class="wrap">
-            <h1>SEOGhost Connector</h1>
+            <h1>SEOGhost Connector <small style="font-weight:normal;color:#666;">v<?php echo esc_html(self::VERSION); ?></small></h1>
             <p>Connectez ce site WordPress à votre espace SEOGhost pour publier automatiquement vos articles.</p>
 
             <table class="widefat striped" style="max-width: 720px; margin: 16px 0;">
@@ -239,7 +241,7 @@ class SEOGhost_Connector {
 
         return new WP_REST_Response([
             'ok'         => true,
-            'version'    => '1.0.0',
+            'version'    => self::VERSION,
             'wp_version' => get_bloginfo('version'),
             'seo_plugin' => self::detect_seo_plugin(),
             'categories' => $categories,
@@ -261,23 +263,20 @@ class SEOGhost_Connector {
         $raw_html    = isset($payload['content_html']) ? (string) $payload['content_html'] : '';
         $status      = $this->map_status($payload['status'] ?? 'publish');
 
-        // Retrouver un article existant lié à cet ID SEOGhost
         $existing_id = $this->find_post_by_seoghost_id($seoghost_id);
 
-        // Si l'article n'a jamais été créé sur WP et qu'il n'est pas publié, on ne crée pas de brouillon inutile
         if (!$existing_id && $status !== 'publish') {
             return new WP_REST_Response(['ok' => true, 'skipped' => true, 'reason' => 'not_published_yet'], 200);
         }
 
         $author_id = $this->resolve_author_id($payload['author_name'] ?? null, (int) $settings['default_author']);
 
-        // Date de publication
         $post_date_args = [];
         if (!empty($payload['published_at'])) {
             $ts = strtotime((string) $payload['published_at']);
             if ($ts !== false) {
                 if ($status === 'publish') {
-                    $ts = min($ts, time()); // Assure la mise en ligne immédiate
+                    $ts = min($ts, time());
                 }
                 $gmt = gmdate('Y-m-d H:i:s', $ts);
                 $post_date_args = [
@@ -288,7 +287,6 @@ class SEOGhost_Connector {
             }
         }
 
-        // Tague les liens internes pointant vers des articles WP déjà connus
         $raw_html = $this->tag_internal_links($raw_html);
 
         $post_data = array_merge([
@@ -305,7 +303,6 @@ class SEOGhost_Connector {
             $post_data['ID'] = $existing_id;
         }
 
-        // Évite que WordPress ne supprime les attributs HTML (table, rel, target, data-seoghost-post)
         kses_remove_filters();
         $post_id = $existing_id ? wp_update_post($post_data, true) : wp_insert_post($post_data, true);
         kses_init_filters();
@@ -316,7 +313,6 @@ class SEOGhost_Connector {
 
         update_post_meta($post_id, self::META_ARTICLE_ID, $seoghost_id);
 
-        // Catégorie & Tags
         $cat_id = (int) $settings['default_category'];
         if ($cat_id > 0) {
             wp_set_post_categories($post_id, [$cat_id], false);
@@ -333,7 +329,6 @@ class SEOGhost_Connector {
             wp_set_post_tags($post_id, $tag_names, false);
         }
 
-        // Sideload des images (couverture + images dans le HTML)
         $cover_url    = !empty($payload['cover_image_url']) ? esc_url_raw((string) $payload['cover_image_url']) : '';
         $cover_alt    = !empty($payload['cover_alt']) ? sanitize_text_field((string) $payload['cover_alt']) : $title;
         $cover_credit = is_array($payload['cover_credit'] ?? null) ? $payload['cover_credit'] : null;
@@ -357,7 +352,6 @@ class SEOGhost_Connector {
             }
         }
 
-        // Metas SEO (SEOPress / Yoast / RankMath / Autonome)
         $seo_title = !empty($payload['seo_title']) ? sanitize_text_field((string) $payload['seo_title']) : $title;
         $meta_desc = !empty($payload['meta_description']) ? sanitize_text_field((string) $payload['meta_description']) : $excerpt;
         $this->save_seo_metadata($post_id, $seo_title, $meta_desc, $local_cover, $featured_id, $cover_alt);
@@ -409,7 +403,29 @@ class SEOGhost_Connector {
     }
 
     // -------------------------------------------------------------------------
-    // Dynamic Internal Link Resolution (résistant aux changements de permaliens)
+    // Responsive Tables & Mobile Overflow Protection
+    // -------------------------------------------------------------------------
+
+    public function wrap_responsive_tables(string $content): string {
+        if ($content === '' || !is_singular('post') || !in_the_loop() || !is_main_query()) {
+            return $content;
+        }
+        if (!get_post_meta(get_the_ID(), self::META_ARTICLE_ID, true)) {
+            return $content;
+        }
+        if (stripos($content, '<table') === false || strpos($content, 'seoghost-table-wrap') !== false) {
+            return $content;
+        }
+
+        return (string) preg_replace(
+            '/<table\b[^>]*>[\s\S]*?<\/table>/i',
+            '<div class="seoghost-table-wrap">$0</div>',
+            $content
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Dynamic Internal Link Resolution
     // -------------------------------------------------------------------------
 
     private function tag_internal_links(string $html): string {
@@ -513,7 +529,6 @@ class SEOGhost_Connector {
             return null;
         }
 
-        // Ne pas détourner une vraie page statique (ex: /contact)
         if (get_page_by_path($path, OBJECT, 'page')) {
             return null;
         }
@@ -524,7 +539,7 @@ class SEOGhost_Connector {
     }
 
     // -------------------------------------------------------------------------
-    // Media Sideloading (compatible Unsplash / Supabase sans extension .jpg)
+    // Media Sideloading
     // -------------------------------------------------------------------------
 
     private function sync_cover_image(int $post_id, string $url, string $alt, ?array $credit): int {
@@ -649,7 +664,7 @@ class SEOGhost_Connector {
     }
 
     // -------------------------------------------------------------------------
-    // SEO Metadata & Standalone Fallback
+    // SEO Metadata, Responsive Styles & Standalone Fallback
     // -------------------------------------------------------------------------
 
     private function save_seo_metadata(int $post_id, string $seo_title, string $meta_desc, string $cover_url, int $cover_id, string $cover_alt): void {
@@ -703,6 +718,15 @@ class SEOGhost_Connector {
         if (!is_singular('post')) return;
         $post_id = get_queried_object_id();
         if (!get_post_meta($post_id, self::META_ARTICLE_ID, true)) return;
+
+        // CSS de protection mobile pour éviter que les tableaux/URLs longues ne cassent le thème client
+        echo "<style id=\"seoghost-connector-responsive\">\n"
+            . "main, article, .entry-content { min-width: 0; }\n"
+            . "article img { max-width: 100%; height: auto; }\n"
+            . "article p, article li, article a { overflow-wrap: break-word; }\n"
+            . ".seoghost-table-wrap { display: block; width: 100%; max-width: min(100%, calc(100vw - 2rem)); overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1.5rem 0; }\n"
+            . ".seoghost-table-wrap > table { width: 100%; min-width: 480px; border-collapse: collapse; }\n"
+            . "</style>\n";
 
         $seo_plugin = self::detect_seo_plugin();
         $seo_title  = (string) get_post_meta($post_id, self::META_SEO_TITLE, true) ?: get_the_title($post_id);
