@@ -54,4 +54,4 @@ Then configure **Settings > SEOGhost** in `/wp-admin` (or via `wp option update 
 
 - **Images don't appear or are broken**: Make sure **Sideload images** is checked in **Settings > SEOGhost** and that `wp-content/uploads` is writable.
 - **404 when SEOGhost pushes an article**: Go to **Settings > Permalinks** in WordPress and click **Save Changes** without changing anything to flush REST API routes.
-- **Updates**: Future versions (`> 1.0.2`) appear automatically inside **WordPress > Plugins** for 1-click updates.
+- **Updates**: Future versions (`> 1.0.3`) appear automatically inside **WordPress > Plugins** for 1-click updates.

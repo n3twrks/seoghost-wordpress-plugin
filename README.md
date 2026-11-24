@@ -20,16 +20,13 @@ Automatically receives, publishes, and updates SEO blog posts pushed from your S
 - WordPress 6.0+
 - PHP 7.4+
 
-## Packaging & Installation
+## Installation
 
-1. Create the installable plugin archive from the repository root:
-
-```bash
-zip -r seoghost-connector.zip seoghost-connector -x "*.DS_Store"
-```
-
+1. Download the latest release: [seoghost-connector.zip](https://github.com/n3twrks/seoghost-wordpress-plugin/releases/latest/download/seoghost-connector.zip)
 2. In your WordPress admin, go to **Plugins > Add New > Upload Plugin**.
 3. Upload `seoghost-connector.zip` and click **Activate**.
+
+Future versions appear in **Plugins** for 1-click updates (you can also enable auto-updates there).
 
 ## Configuration
 
@@ -49,3 +46,7 @@ All endpoints require authentication via `X-SEOGhost-Key: <api_key>` (or `Author
 
 - **`404` on `/wp-json/seoghost/v1/...`**: Go to **Settings > Permalinks** in WordPress and click **Save Changes** to flush rewrite rules (make sure permalinks are not set to "Plain").
 - **Authentication errors on Apache/OVH**: Some hosts strip the `Authorization` header—SEOGhost sends `X-SEOGhost-Key` by default to avoid this.
+
+## License
+
+GPL-2.0-or-later. See [LICENSE](LICENSE).
